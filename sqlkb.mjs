@@ -159,9 +159,9 @@ async function buildSection(dataDir, maxSectionChars) {
       '## SQL 知识注册表（描述层）',
       `> 数据源：${dataDir}。知识库将初次使用时自动创建骨架，当前为空。`,
       '',
-      '做 SQL 相关工作（查表结构、写查询、找示例）时，按需调用工具：',
-      '- sqlkb_list — 列出全部表/示例的紧凑清单（先看有哪些可用资源）',
-      '- sqlkb_search — 按关键词检索表/示例（名称/用途/标签/引擎）',
+      '做 SQL 相关工作（查表结构、写查询、找示例）时：第一步先调用 sqlkb_list 看有哪些可用资源，再决定下一步。',
+      '- sqlkb_list — 列出全部表/示例的紧凑清单（硬要求：先调用它）',
+      '- sqlkb_search — 按关键词检索表/示例（含业务指标词/字段名/字段注释）',
       '- sqlkb_get — 按表名或示例名读取单个明细文件（字段清单/SQL 正文）',
       '- sqlkb_pending — 管理待补池（未命中自动留痕，收尾时与我确认后补录）',
       '- sqlkb_create — 经我明确同意后把待补条目补录为表/示例知识',
@@ -170,11 +170,12 @@ async function buildSection(dataDir, maxSectionChars) {
   }
   text = [
     '## SQL 知识注册表（描述层）',
-    `> 数据源：${dataDir}。共 ${data.tables.length} 张表、${data.examples.length} 个示例。`,
-    '> 清单不在此展开：做 SQL 相关工作时按需调用工具——',
-    '- sqlkb_list — 列出全部表/示例紧凑清单（先看有哪些资源，再决定用哪张表/哪个示例）',
-    '- sqlkb_search — 按关键词检索表/示例（名称/用途/标签/引擎）',
-    '- sqlkb_get — 按表名或示例名读取单个明细（字段清单/SQL 正文）',
+    `> 数据源：${dataDir}。共 ${data.tables.length} 张表、${data.examples.length} 个示例。知识库含每张表的字段清单与字段注释。`,
+    '> 【硬要求】做任何 SQL 相关工作（查表结构/写查询/找示例）第一步必须先调用 sqlkb_list 获取全量清单——',
+    '> 看清了有哪些表/示例，再决定用哪张表、哪个示例，而不是直接凭印象写 SQL 或直接搜索。',
+    '- 步骤1 sqlkb_list — 必须最先调用：列出全部表/示例紧凑清单',
+    '- 步骤2 sqlkb_search — 用业务指标词/字段名/字段注释缩小范围（含正文字段匹配）',
+    '- 步骤3 sqlkb_get — 按表名或示例名读取单个明细（字段清单/SQL 正文）',
     '- sqlkb_pending — 待补池：未命中的检索/读取自动留痕（内存、不写文件、重启即清空）',
     '- sqlkb_create — 经用户明确同意后把待补条目补录为表/示例知识',
   ].join('\n')
@@ -313,7 +314,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register({
     name: 'sqlkb_list',
-    description: '列出 SQL 知识注册表的全量清单：全部表 + 全部示例的紧凑描述行（名称/类型或用途/执行方式/引擎/标签/文件路径）。做 SQL 相关工作（查表结构、写查询、找可用示例）时，先调用本工具看有哪些资源。',
+    description: '列出 SQL 知识注册表的全量清单：全部表 + 全部示例的紧凑描述行（名称/类型或用途/执行方式/引擎/标签/文件路径）。【硬要求】做任何 SQL 相关工作，第一步必须先调用本工具获取全量清单，看清有哪些表/示例后再决定下一步（sqlkb_search 缩小范围 / sqlkb_get 读明细），不要直接凭印象写 SQL 或直接搜索。',
     parameters: {
       type: 'object',
       properties: {
@@ -346,13 +347,14 @@ export function apply(ctx, config) {
   ctx.tools.register({
     name: 'sqlkb_search',
     description: [
-      '搜索 SQL 知识注册表：匹配表/示例的名称、用途、标签、引擎、相关表。',
+      '搜索 SQL 知识注册表：匹配表/示例的名称、用途、标签、引擎、相关表；表的匹配还包含正文里的字段名与字段注释。',
+      '【使用前应先 sqlkb_list 获取全量清单，再用本工具缩小范围】',
       '只返回紧凑描述行（绝不返回完整字段表或 SQL 正文），命中后用 sqlkb_get 按 id 取完整明细。',
     ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '关键词' },
+        query: { type: 'string', description: '关键词（业务指标词/字段名/字段注释等，如 销售额、客户数、restore_sales_amt、sdt）' },
         kind: { type: 'string', enum: ['table', 'example', 'all'], description: '限定范围（默认 all）' },
       },
       required: ['query'],
@@ -360,41 +362,80 @@ export function apply(ctx, config) {
     output: textOut,
     async execute(args, exec) {
       const data = await readAll(dataDir)
-      const q = String(args.query || '').toLowerCase().trim()
-      if (!q) return { text: 'query 不能为空' }
+      const raw = String(args.query || '').trim()
+      if (!raw) return { text: 'query 不能为空' }
+      const q = raw.toLowerCase()
+      // 拆成词元（按空白分隔），任一词元命中即命中——避免整串匹配漏检（如"销售总额 销售额"）
+      const tokens = q.split(/\s+/).filter(Boolean)
+      // 常见量词后缀，命中不足时裁剪后再匹配一次（如 销售总额→销售、客户数→客户）
+      const QTY_SUFFIX = ['总额', '金额', '总量', '数量', '次数', '个数', '条数', '额度', '金额数']
+      // 命中强度：2=强（整串或词元完整命中），1=弱（仅量词裁剪后命中），0=未命中
+      const strength = (hay) => {
+        const h = String(hay || '').toLowerCase()
+        if (h.includes(q)) return 2
+        if (tokens.some((t) => t && h.includes(t))) return 2
+        let weak = 0
+        for (const t of tokens) {
+          for (const suf of QTY_SUFFIX) {
+            if (t.length > suf.length && t.endsWith(suf)) {
+              const stem = t.slice(0, t.length - suf.length)
+              if (stem && h.includes(stem)) weak = 1
+            }
+          }
+        }
+        return weak
+      }
+      // 取表/示例的最大命中强度（元数据 + 表正文；示例不搜正文）
+      const itemStrength = (item, isTable) => {
+        const m = item.meta
+        const metaHay = isTable
+          ? [m.name, m.type, m.purpose, m.exec, m.related, ...listVal(m.engines), ...listVal(m.tags)].join(' ').toLowerCase()
+          : [m.name, m.purpose, ...listVal(m.tables), ...listVal(m.tags)].join(' ').toLowerCase()
+        const sMeta = strength(metaHay)
+        const sBody = isTable ? strength(String(item.body || '')) : 0
+        return Math.max(sMeta, sBody)
+      }
       const kind = args.kind || 'all'
       const out = []
       if (kind === 'all' || kind === 'table') {
-        const hits = data.tables.filter((t) => {
-          const m = t.meta
-          const hay = [m.name, m.type, m.purpose, m.exec, m.related, ...listVal(m.engines), ...listVal(m.tags)].join(' ').toLowerCase()
-          return hay.includes(q)
-        })
+        const hits = data.tables
+          .map((t) => ({ t, s: itemStrength(t, true) }))
+          .filter((x) => x.s > 0)
+          .sort((a, b) => (b.s - a.s) || a.t.meta.name.localeCompare(b.t.meta.name))
         if (hits.length) {
-          out.push(`表（${hits.length} 命中）：`)
-          for (const t of hits) out.push(tableLine(t))
+          const strong = hits.filter((x) => x.s === 2).length
+          out.push(`表（${hits.length} 命中${strong ? `，其中 ${strong} 个强匹配` : ''}）：`)
+          for (const { t, s } of hits) out.push((s === 2 ? '★ ' : '· ') + tableLine(t))
           out.push('')
         }
       }
       if (kind === 'all' || kind === 'example') {
-        const hits = data.examples.filter((e) => {
-          const m = e.meta
-          const hay = [m.name, m.purpose, ...listVal(m.tables), ...listVal(m.tags)].join(' ').toLowerCase()
-          return hay.includes(q)
-        })
+        const hits = data.examples
+          .map((e) => ({ e, s: itemStrength(e, false) }))
+          .filter((x) => x.s > 0)
+          .sort((a, b) => (b.s - a.s) || a.e.meta.name.localeCompare(b.e.meta.name))
         if (hits.length) {
           out.push(`示例（${hits.length} 命中）：`)
-          for (const e of hits) out.push(exampleLine(e))
+          for (const { e, s } of hits) out.push((s === 2 ? '★ ' : '· ') + exampleLine(e))
         }
       }
       if (!out.length) {
-        // 未命中自动留痕（内存待补池，按会话隔离；不写任何文件）
+        // 未命中：自动留痕（内存待补池）+ 自动附上全量清单，让 agent 一步到位看到有哪些表/示例
         addPending(poolFor(exec?.agent), {
-          keyword: String(args.query),
+          keyword: raw,
           kind: kind === 'example' ? 'example' : kind === 'table' ? 'table' : 'unknown',
           source: 'search',
         })
-        return { text: `未命中「${args.query}」。已自动留痕到本会话待补池（sqlkb_pending list 查看）。` }
+        const lines = [`未命中「${raw}」。以下自动附上本知识库全量清单，请从中找出最可能相关的表/示例，再 sqlkb_get 读取明细确认，不要绕过知识库直接凭印象写 SQL。`]
+        if (data.tables.length) {
+          lines.push('', `表（${data.tables.length}）：`)
+          for (const t of data.tables) lines.push(tableLine(t))
+        }
+        if (data.examples.length) {
+          lines.push('', `示例（${data.examples.length}）：`)
+          for (const e of data.examples) lines.push(exampleLine(e))
+        }
+        return { text: lines.join('\n') }
       }
       return { text: out.join('\n') }
     },
