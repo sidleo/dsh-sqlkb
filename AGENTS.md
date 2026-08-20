@@ -5,7 +5,8 @@
 
 ## 能力定位
 
-- **插件职责**：host 进程内的宿主层插件（web profile bundle）。每轮 prompt 组装注入紧凑描述层 section；提供 `sqlkb_search` / `sqlkb_get` / `sqlkb_validate` 三个工具。**不 publish 任何 service**，仅消费 `systemPrompt` / `tools`。
+- **插件职责**：host 进程内的宿主层插件（web profile bundle）。每轮 prompt 组装注入精简描述层 section（声明知识库存在与工具用法，**不铺开全部表/示例清单**）；提供 `sqlkb_list` / `sqlkb_search` / `sqlkb_get` / `sqlkb_validate` / `sqlkb_pending` / `sqlkb_create` 共六个工具。**不 publish 任何 service**，仅消费 `systemPrompt` / `tools`。
+- **待补池机制**：`sqlkb_search`/`sqlkb_get` 未命中时自动留痕到进程内存待补池（按 agent 会话隔离、不写任何文件、重启即清空），描述层提示模型任务收尾时经用户同意后用 `sqlkb_create` 补录。涉及用户知识数据的写入（`tables/`/`examples/`）必须在用户明确同意后执行（`user_approved: true` 门控）。
 - **知识数据**：业务表结构/示例属用户私有内容，**一律不进本仓库、不随 npm 包分发**。数据默认放 `~/.agents/sqlkb`（可配置 `dataDir` 覆盖），由用户自行维护。
 
 ## 目录结构

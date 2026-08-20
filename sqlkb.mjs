@@ -5,9 +5,11 @@
  * 1. 会话每轮 prompt 组装时（system-prompt/assemble 瀑布内）注入一个紧凑「描述层」
  *    section：每表/每示例一行（名称/类型/用途/执行方式/引擎/标签/文件路径），
  *    绝不含字段明细与 SQL 正文。
- * 2. 提供工具：sqlkb_search（关键词检索描述层，返回紧凑命中行）、
+ * 2. 提供工具：sqlkb_list（按需列出全量紧凑清单）、sqlkb_search（关键词检索描述层，返回紧凑命中行）、
  *    sqlkb_get（按 id 读取单个明细文件返回完整内容）、
- *    sqlkb_validate（按编写规范校验知识目录，支持持续新增/修改表与示例）。
+ *    sqlkb_validate（按编写规范校验知识目录，支持持续新增/修改表与示例）、
+ *    sqlkb_pending（管理进程内存待补池：未命中自动留痕、按会话隔离、不写任何文件）、
+ *    sqlkb_create（经用户明确同意后把条目补录为表/示例知识文件并自动校验）。
  * 3. 数据源为 front-matter + 正文的 markdown 文件；默认目录 ~/.agents/sqlkb，
  *    可在安装配置中通过 dataDir 覆盖（见项目 README）。
  *
@@ -38,9 +40,13 @@ const SEED_README = `# sqlkb 知识目录
 
 sqlkb 插件按需读取本目录的 markdown 文件（front-matter + 正文）。
 
-## 结构
+## 目录结构
 - tables/<表名>.md      每表一个文件：属性 + 全量字段清单 + 补充
 - examples/<示例名>.md  每示例一个文件：用途 + SQL + 说明
+
+## 使用方式（DSH 会话）
+- 插件注入精简描述层：声明知识库存在与工具用法（**不铺开全部清单**，开销恒定、不随知识量增长）
+- 做 SQL 相关工作按需调用：sqlkb_list（列全量清单）→ sqlkb_search（关键词检索）→ sqlkb_get（读单个明细）
 
 ## 表文件 front-matter（必填 5 项）
 \`\`\`yaml
@@ -69,6 +75,10 @@ tags: <检索标签>
 - 新增表/示例：按上面模板新建文件即可，描述层下个缓存窗口自动包含，无需改插件
 - 口径红线：每个示例「口径」段写明各指标唯一来源表/字段、禁止用什么替代
 - 正文细节只进各自文件；描述层只含 front-matter 元数据
+
+## 待补池（未命中自动留痕）
+- 检索/读取未命中时自动记入当前会话的进程内存待补池（不写入本目录、不写任何文件，重启即清空）
+- 任务收尾时用 sqlkb_pending list 查看，经用户同意后 sqlkb_create 补录为表/示例知识（写入 tables/ 或 examples/）
 `
 
 function listVal(v) {
@@ -143,23 +153,81 @@ function exampleLine(e) {
 
 async function buildSection(dataDir, maxSectionChars) {
   const data = await readAll(dataDir)
-  data.tables.sort((a, b) => a.meta.name.localeCompare(b.meta.name))
-  data.examples.sort((a, b) => a.meta.name.localeCompare(b.meta.name))
-  const lines = [
+  let text
+  if (!data.tables.length && !data.examples.length) {
+    text = [
+      '## SQL 知识注册表（描述层）',
+      `> 数据源：${dataDir}。知识库将初次使用时自动创建骨架，当前为空。`,
+      '',
+      '做 SQL 相关工作（查表结构、写查询、找示例）时，按需调用工具：',
+      '- sqlkb_list — 列出全部表/示例的紧凑清单（先看有哪些可用资源）',
+      '- sqlkb_search — 按关键词检索表/示例（名称/用途/标签/引擎）',
+      '- sqlkb_get — 按表名或示例名读取单个明细文件（字段清单/SQL 正文）',
+      '- sqlkb_pending — 管理待补池（未命中自动留痕，收尾时与我确认后补录）',
+      '- sqlkb_create — 经我明确同意后把待补条目补录为表/示例知识',
+    ].join('\n')
+    return text
+  }
+  text = [
     '## SQL 知识注册表（描述层）',
-    `> 数据源：${dataDir}。此处只含描述；字段明细/SQL 正文用 sqlkb_get 按需获取，勿整体读取明细文件。`,
-    '',
-    '执行通道：见知识目录 README（表/示例 front-matter 的 exec/engines 字段声明）。',
-    '',
-    `表目录（${data.tables.length}）：`,
-    ...data.tables.map(tableLine),
-    '',
-    `示例目录（${data.examples.length}）：`,
-    ...data.examples.map(exampleLine),
-  ]
-  let text = lines.join('\n')
-  if (text.length > maxSectionChars) text = text.slice(0, maxSectionChars) + '\n…（描述层超限截断，请用 sqlkb_search 检索）'
+    `> 数据源：${dataDir}。共 ${data.tables.length} 张表、${data.examples.length} 个示例。`,
+    '> 清单不在此展开：做 SQL 相关工作时按需调用工具——',
+    '- sqlkb_list — 列出全部表/示例紧凑清单（先看有哪些资源，再决定用哪张表/哪个示例）',
+    '- sqlkb_search — 按关键词检索表/示例（名称/用途/标签/引擎）',
+    '- sqlkb_get — 按表名或示例名读取单个明细（字段清单/SQL 正文）',
+    '- sqlkb_pending — 待补池：未命中的检索/读取自动留痕（内存、不写文件、重启即清空）',
+    '- sqlkb_create — 经用户明确同意后把待补条目补录为表/示例知识',
+  ].join('\n')
+  if (text.length > maxSectionChars) text = text.slice(0, maxSectionChars) + '\n…（描述层超限截断）'
   return text
+}
+
+// —— 待补池（进程内存，绝不落盘）——
+// 未命中的检索/读取自动留痕于此，按会话（agent 对象）隔离。
+// 不写任何文件：无残留文件、不会在重启后污染其他会话；随进程退出/会话回收自动清空。
+const pendingPools = new WeakMap()
+// 会话身份缺失（非标准调用）时的兜底隔离键（仍为进程内内存，不落盘）
+const GLOBAL_POOL_KEY = Symbol('sqlkb-global-pending-pool')
+
+function poolFor(agentLike) {
+  const key = agentLike && typeof agentLike === 'object' ? agentLike : GLOBAL_POOL_KEY
+  let pool = pendingPools.get(key)
+  if (!pool) {
+    pool = new Map()
+    pendingPools.set(key, pool)
+  }
+  return pool
+}
+
+/** 未命中留痕：写入该会话的待补池。keyword+kind 相同则去重（仅刷新时间戳/备注），不重复堆积。 */
+function addPending(pool, { keyword, kind = 'unknown', source = 'manual', note = '' }) {
+  const kw = String(keyword || '').trim()
+  if (!kw) return { ok: false, error: 'keyword 为空' }
+  const dedupKey = kw + '\u0000' + kind
+  const existing = pool.get(dedupKey)
+  const now = Date.now()
+  if (existing) {
+    existing.ts = now
+    if (note) existing.note = note
+    return { ok: true, deduped: true, id: existing.id }
+  }
+  const id = `${pool.size + 1}_${kind}`
+  pool.set(dedupKey, { id, keyword: kw, kind, source, note: String(note || ''), ts: now })
+  return { ok: true, id }
+}
+
+function listPending(pool) {
+  return [...pool.values()].sort((a, b) => a.ts - b.ts)
+}
+
+function removePending(pool, id) {
+  for (const [key, v] of pool) {
+    if (v.id === id) {
+      pool.delete(key)
+      return { ok: true, id }
+    }
+  }
+  return { ok: false, error: `待补条目不存在: ${id}` }
 }
 
 /** 按编写规范校验知识目录，返回问题清单（支持持续新增/修改表、示例）。 */
@@ -244,6 +312,38 @@ export function apply(ctx, config) {
   }
 
   ctx.tools.register({
+    name: 'sqlkb_list',
+    description: '列出 SQL 知识注册表的全量清单：全部表 + 全部示例的紧凑描述行（名称/类型或用途/执行方式/引擎/标签/文件路径）。做 SQL 相关工作（查表结构、写查询、找可用示例）时，先调用本工具看有哪些资源。',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['table', 'example', 'all'], description: '限定范围（默认 all）' },
+      },
+    },
+    output: textOut,
+    async execute(args) {
+      const data = await readAll(dataDir)
+      const lines = []
+      const kind = args.kind || 'all'
+      if (kind === 'all' || kind === 'table') {
+        if (data.tables.length) {
+          lines.push(`表（${data.tables.length}）：`)
+          for (const t of data.tables) lines.push(tableLine(t))
+          lines.push('')
+        }
+      }
+      if (kind === 'all' || kind === 'example') {
+        if (data.examples.length) {
+          lines.push(`示例（${data.examples.length}）：`)
+          for (const e of data.examples) lines.push(exampleLine(e))
+        }
+      }
+      if (!lines.length) return { text: '知识库暂无表或示例。' }
+      return { text: lines.join('\n') }
+    },
+  })
+
+  ctx.tools.register({
     name: 'sqlkb_search',
     description: [
       '搜索 SQL 知识注册表：匹配表/示例的名称、用途、标签、引擎、相关表。',
@@ -258,7 +358,7 @@ export function apply(ctx, config) {
       required: ['query'],
     },
     output: textOut,
-    async execute(args) {
+    async execute(args, exec) {
       const data = await readAll(dataDir)
       const q = String(args.query || '').toLowerCase().trim()
       if (!q) return { text: 'query 不能为空' }
@@ -287,7 +387,15 @@ export function apply(ctx, config) {
           for (const e of hits) out.push(exampleLine(e))
         }
       }
-      if (!out.length) return { text: `未命中「${args.query}」。可换关键词或指定 kind=table/example。` }
+      if (!out.length) {
+        // 未命中自动留痕（内存待补池，按会话隔离；不写任何文件）
+        addPending(poolFor(exec?.agent), {
+          keyword: String(args.query),
+          kind: kind === 'example' ? 'example' : kind === 'table' ? 'table' : 'unknown',
+          source: 'search',
+        })
+        return { text: `未命中「${args.query}」。已自动留痕到本会话待补池（sqlkb_pending list 查看）。` }
+      }
       return { text: out.join('\n') }
     },
   })
@@ -306,12 +414,16 @@ export function apply(ctx, config) {
       required: ['id'],
     },
     output: textOut,
-    async execute(args) {
+    async execute(args, exec) {
       const id = String(args.id || '').trim()
       if (!id) return { text: 'id 不能为空' }
       const data = await readAll(dataDir)
       const item = data.tables.find((x) => x.meta.name === id) || data.examples.find((x) => x.meta.name === id)
-      if (!item) return { text: `未找到「${id}」。请先 sqlkb_search 确认精确名称（表名或示例名）。` }
+      if (!item) {
+        // 未找到自动留痕（内存待补池，按会话隔离；不写任何文件）
+        addPending(poolFor(exec?.agent), { keyword: id, kind: 'unknown', source: 'get' })
+        return { text: `未找到「${id}」。已自动留痕到本会话待补池（sqlkb_pending list 查看），确认后可用 sqlkb_create 补录。` }
+      }
       let content = item.body.trim()
       if (content.length > maxGetChars) content = content.slice(0, maxGetChars) + '\n…（内容超长截断）'
       return { text: content }
@@ -331,6 +443,123 @@ export function apply(ctx, config) {
     output: textOut,
     async execute() {
       return { text: await validate(dataDir) }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'sqlkb_pending',
+    description: [
+      '管理「待补池」（未命中自动留痕的条目队列）。',
+      'action=list（默认）列出全部待补条目；action=add 手动记录一条；action=remove 删除指定条目。',
+      '补录流程：向用户展示待补条目，征得同意后调用 sqlkb_create（user_approved: true）写入表/示例知识，成功后自动删除对应待补条目。',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'add', 'remove'], description: '操作（默认 list）' },
+        keyword: { type: 'string', description: 'action=add 时的关键词/表名/示例名' },
+        kind: { type: 'string', enum: ['table', 'example', 'unknown'], description: 'action=add 时预期类型（默认 unknown）' },
+        note: { type: 'string', description: 'action=add 时的备注/上下文' },
+        id: { type: 'string', description: 'action=remove 时条目 id（list 返回的 id），如 20260728-000000-table-sale_fact' },
+      },
+    },
+    output: textOut,
+    async execute(args, exec) {
+      const action = args.action || 'list'
+      const pool = poolFor(exec?.agent)
+      if (action === 'add') {
+        const res = addPending(pool, {
+          keyword: args.keyword,
+          kind: args.kind || 'unknown',
+          source: 'manual',
+          note: args.note || '',
+        })
+        if (!res.ok) return { text: res.error }
+        return { text: res.deduped ? `待补池已存在相同条目（keyword+kind 相同），已刷新时间戳：${res.id}` : `已记入待补池：${res.id}` }
+      }
+      if (action === 'remove') {
+        const res = removePending(pool, args.id)
+        return { text: res.ok ? `已删除待补条目：${args.id}` : res.error }
+      }
+      const pending = listPending(pool)
+      if (pending.length === 0) {
+        return { text: '待补池为空。sqlkb_search/sqlkb_get 未命中时会自动留痕（内存、按会话隔离、不写文件）；也可用 action=add 手动记录。' }
+      }
+      const lines = [`待补池（本会话 ${pending.length} 条，进程内存、重启即清空）：`, '']
+      for (const p of pending) {
+        const note = p.note ? `｜备注:${String(p.note).replace(/\s+/g, ' ').slice(0, 120)}` : ''
+        lines.push(`- ${p.id}｜${p.kind}｜${p.keyword}｜${new Date(p.ts).toISOString()}｜source:${p.source}${note}`)
+      }
+      lines.push('', '提示：向用户确认后，用 sqlkb_create（user_approved: true）补录为表/示例知识；不需要的用 action=remove 清理。')
+      return { text: lines.join('\n') }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'sqlkb_create',
+    description: [
+      '将待补条目补录为知识目录中的表/示例文件（tables/ 或 examples/），并自动校验规范。',
+      '【必须经用户同意】仅在用户明确同意后调用，且需传 user_approved: true，否则拒绝执行。',
+      '参数：kind(table/example)、name、purpose；表文件另需 type/exec/engines/tags（related 可选）；示例文件另需 tables（用到的表）与 tags（必填）。',
+      'body 为文件正文：表=字段清单；示例=SQL/口径/说明。from_pending 绑定待补条目 id，写入成功且规范校验通过后自动删除该条。',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['table', 'example'] },
+        name: { type: 'string', description: '表名或示例名（与文件名一致）' },
+        purpose: { type: 'string', description: '一句话用途' },
+        type: { type: 'string', description: 'kind=table 必填：事实表/维表/临时表等' },
+        exec: { type: 'string', description: 'kind=table 必填：执行方式（如 skill:yh-bigdata）' },
+        engines: { type: 'string', description: 'kind=table 必填：支持引擎，逗号分隔（impala, hive）' },
+        tags: { type: 'string', description: '检索标签，逗号分隔' },
+        related: { type: 'string', description: 'kind=table 可选：同构/关联表' },
+        tables: { type: 'string', description: 'kind=example 必填：用到的表，逗号分隔' },
+        body: { type: 'string', description: '文件正文（表=字段清单；示例=SQL/口径/说明）' },
+        from_pending: { type: 'string', description: '可选：待补条目 id，成功后自动删除' },
+        user_approved: { type: 'boolean', description: '必须为 true：用户已明确同意补录' },
+      },
+      required: ['kind', 'name', 'purpose'],
+    },
+    output: textOut,
+    async execute(args, exec) {
+      if (args.user_approved !== true) {
+        return { text: '拒绝执行：补录前必须先向用户展示拟新增内容并获得明确同意，同意后以 user_approved: true 重新调用。' }
+      }
+      const kind = args.kind
+      const name = String(args.name || '').trim()
+      if (!/^[\w\u4e00-\u9fa5.-]+$/.test(name)) {
+        return { text: `名称「${name}」含非法字符（仅允许中文/字母/数字/._-）。` }
+      }
+      const fm = [
+        '---',
+        `name: ${name}`,
+        `purpose: ${String(args.purpose || '').trim()}`,
+      ]
+      const missing = []
+      const needTags = ['type', 'exec', 'engines', 'tags']
+      if (kind === 'table') {
+        for (const k of needTags) {
+          if (!args[k]) missing.push(k)
+        }
+        if (missing.length) return { text: `kind=table 缺少必填字段：${missing.join(', ')}` }
+        fm.push(`type: ${String(args.type).trim()}`, `exec: ${String(args.exec).trim()}`, `engines: ${String(args.engines).trim()}`, `tags: ${String(args.tags).trim()}`)
+        if (args.related) fm.push(`related: ${String(args.related).trim()}`)
+      } else {
+        if (!args.tables) return { text: 'kind=example 缺少必填字段：tables' }
+        if (!args.tags) return { text: 'kind=example 缺少必填字段：tags' }
+        fm.push(`tables: ${String(args.tables).trim()}`, `tags: ${String(args.tags).trim()}`)
+      }
+      const body = String(args.body || '').trim() || '（待补充正文）'
+      const file = join(dataDir, kind === 'table' ? 'tables' : 'examples', `${name}.md`)
+      await writeFile(file, fm.join('\n') + '\n---\n\n' + body + '\n', 'utf8')
+      const check = await validate(dataDir)
+      let removed = ''
+      if (args.from_pending) {
+        const r = removePending(poolFor(exec?.agent), args.from_pending)
+        if (r.ok) removed = `\n已从本会话待补池删除：${args.from_pending}`
+      }
+      return { text: `已写入 ${file}${removed}\n\n${check}` }
     },
   })
 }

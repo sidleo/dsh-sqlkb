@@ -6,8 +6,9 @@
 
 | 时机 | 行为 | 由谁控制 |
 |------|------|---------|
-| 会话每一轮 prompt 组装 | 注入紧凑「描述层」section：每表/每示例一行（名称/类型/用途/执行方式/引擎/标签/文件路径），**绝不含字段明细与 SQL 正文** | 插件代码（确定性，不读整文档） |
-| 需要明细时 | 模型调用 `sqlkb_search` 检索 → `sqlkb_get` 读取**单个**明细文件返回 | 插件代码（精确、有界、按需） |
+| 会话每一轮 prompt 组装 | 注入紧凑「描述层」section：只声明知识库存在与工具用法（**不铺开全部表/示例清单**），每轮开销恒定、很小，不随知识量增长 | 插件代码（确定性，不读整文档） |
+| 做 SQL 相关工作、需要知道有哪些资源时 | 模型调用 `sqlkb_list` 列出全量紧凑清单 → 用 `sqlkb_search` 缩小范围 → `sqlkb_get` 读取**单个**明细文件 | 插件代码（精确、有界、按需） |
+| 未命中时 | `sqlkb_search`/`sqlkb_get` 自动留痕到进程内存待补池（按会话隔离、不写文件、重启即清空）；任务收尾经用户同意后 `sqlkb_create` 补录为表/示例知识 | 插件代码（自动留痕）→ 经用户同意（补录） |
 | 新增/修改知识后 | `sqlkb_validate` 校验规范性 | 插件代码 |
 
 **安装于宿主层（web profile）**：挂在 profile bundle 层，**任意 preset / 任意模式 / 任意会话共享**，无需选择专用模式。
@@ -46,9 +47,12 @@ dsh plugin --profile web add link:/path/to/this/checkout
 
 | 工具 | 用途 |
 |------|------|
-| `sqlkb_search { query, kind? }` | 关键词检索表/示例（名称/用途/标签/引擎/相关表），返回紧凑命中行 |
-| `sqlkb_get { id }` | 按表名或示例名读取**单个**明细文件，返回完整内容（字段清单或 SQL 正文） |
+| `sqlkb_list { kind? }` | 列出全量清单：全部表/示例的紧凑描述行（先看有哪些资源，再决定用哪张表/哪个示例） |
+| `sqlkb_search { query, kind? }` | 关键词检索表/示例（名称/用途/标签/引擎/相关表），返回紧凑命中行；未命中时自动留痕到待补池（内存、按会话隔离、不写文件） |
+| `sqlkb_get { id }` | 按表名或示例名读取**单个**明细文件，返回完整内容（字段清单或 SQL 正文）；未找到时自动留痕到待补池 |
 | `sqlkb_validate { }` | 按规范校验整个知识目录（front-matter 完整性、命名一致性、重复、空正文） |
+| `sqlkb_pending { action?, keyword?, kind?, note?, id? }` | 管理待补池：`list`（默认）列出当前会话未命中记录；`add` 手动记录一条；`remove` 清理废弃条目 |
+| `sqlkb_create { kind, name, purpose, …, user_approved, from_pending? }` | 将待补条目补录为表/示例知识文件（写入 `tables/` 或 `examples/`）并自动校验。**必须 user_approved: true（用户明确同意）**，成功后自动删除对应待补条目 |
 
 ## 知识目录规范（tables / examples）
 
@@ -60,6 +64,8 @@ dsh plugin --profile web add link:/path/to/this/checkout
 ├── tables/<表名>.md     # 每表一个文件
 └── examples/<示例名>.md # 每示例一个文件
 ```
+
+> 待补池**不落盘**：未命中留痕存在进程内存中（按会话隔离、重启即清空），本目录不会出现任何待补池文件。
 
 **表文件 front-matter（必填）**：
 
@@ -96,6 +102,7 @@ tags: 客单价, 销售
 - **新增示例**：新建 `examples/<示例>.md`（`tables` 字段必填）→ 自动收录
 - **修改**：直接编辑对应文件，`sqlkb_validate` 校验合规
 - **红线**：描述层永远只含 front-matter 元数据；字段明细/SQL 正文只进各自文件
+- **待补池**：`sqlkb_search`/`sqlkb_get` 未命中会自动留痕到当前会话内存（不写任何文件、重启即清空、按会话隔离不会污染其他会话）；任务收尾时模型会用 `sqlkb_pending list` 向你确认，你同意后用 `sqlkb_create` 补录为正式知识文件
 
 ## 设计说明
 
