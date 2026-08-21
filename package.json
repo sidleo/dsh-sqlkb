@@ -1,6 +1,6 @@
 {
   "name": "@sidleo3/dsh-sqlkb",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "SQL 知识注册表（渐进式披露）插件：会话开始只注入表/示例描述层（一行元数据，无明细正文），通过 sqlkb_search / sqlkb_get / sqlkb_validate 按需精准读取 markdown 知识目录。适用于 DeepSeek Harness (DSH)，任意 preset 模式可用。Install via `dsh plugin --profile <name> add @sidleo3/dsh-sqlkb`.",
   "keywords": [
     "deepseek-harness",
