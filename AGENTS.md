@@ -5,8 +5,10 @@
 
 ## 能力定位
 
-- **插件职责**：host 进程内的宿主层插件（web profile bundle）。每轮 prompt 组装注入精简描述层 section（声明知识库存在与工具用法，**不铺开全部表/示例清单**）；提供 `sqlkb_list` / `sqlkb_search` / `sqlkb_get` / `sqlkb_validate` / `sqlkb_pending` / `sqlkb_create` 共六个工具。**不 publish 任何 service**，仅消费 `systemPrompt` / `tools`。
-- **待补池机制**：`sqlkb_search`/`sqlkb_get` 未命中时自动留痕到进程内存待补池（按 agent 会话隔离、不写任何文件、重启即清空），描述层提示模型任务收尾时经用户同意后用 `sqlkb_create` 补录。涉及用户知识数据的写入（`tables/`/`examples/`）必须在用户明确同意后执行（`user_approved: true` 门控）。
+- **插件职责**：host 进程内的宿主层插件（web profile bundle）。每轮 prompt 组装注入精简描述层 section（声明知识库存在与工具用法，**不铺开全部表/示例清单**，并在【硬要求】中强制第一步先 `sqlkb_list`）；提供 `sqlkb_list` / `sqlkb_search` / `sqlkb_get` / `sqlkb_validate` / `sqlkb_pending` / `sqlkb_create` 共六个工具。**不 publish 任何 service**，仅消费 `systemPrompt` / `tools`。
+- **搜索语义（sqlkb_search）**：表匹配范围 = 元数据（name/type/purpose/exec/related/engines/tags）+ **正文字段名与字段注释**（业务指标词如「销售额」也能命中含 `restore_sales_amt` 字段的表）；支持词元拆分（「销售总额 销售额」不要求整串）与量词后缀兜底（「销售总额」→「销售」）；命中按强/弱分级（强匹配标 ★ 排前）。示例只搜元数据不搜正文。改搜索逻辑时保持此语义，并同步更新 README 工具表说明。
+- **待补池机制**：`sqlkb_search` 未命中会**自动附上全量清单**（让 agent 一步到位看到资源）；`sqlkb_search`/`sqlkb_get` 未命中均自动留痕到进程内存待补池（按 agent 会话隔离、不写任何文件、重启即清空），描述层提示模型任务收尾时经用户同意后用 `sqlkb_create` 补录。涉及用户知识数据的写入（`tables/`/`examples/`）必须在用户明确同意后执行（`user_approved: true` 门控）。
+- **表和示例都要看**：定好目标表后，**示例与表结构不是二选一**——描述层强制先 `sqlkb_get` 读相关【示例】（口径红线/SQL，优先复用）再读【表】字段清单，两者都读完才写 SQL。改描述层/工具说明时保持此约束。
 - **知识数据**：业务表结构/示例属用户私有内容，**一律不进本仓库、不随 npm 包分发**。数据默认放 `~/.agents/sqlkb`（可配置 `dataDir` 覆盖），由用户自行维护。
 
 ## 目录结构
