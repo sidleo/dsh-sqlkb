@@ -47,15 +47,15 @@ dsh plugin --profile web add link:/path/to/this/checkout
 
 | 工具 | 用途 |
 |------|------|
-| `sqlkb_list { kind? }` | 列出全量清单：全部表/示例的紧凑描述行。**【硬要求】做任何 SQL 相关工作第一步必须先调用本工具**，看清有哪些资源再决定下一步 |
-| `sqlkb_search { query, kind? }` | 关键词检索表/示例。**表匹配包含名称/用途/标签/引擎/相关表 + 正文字段名与字段注释**（业务指标词如「销售额」也能命中含对应字段的表）；支持词元拆分（「销售总额 销售额」）与量词后缀兜底（「销售总额」→「销售」）；强匹配标 ★ 排前。未命中时自动留痕到待补池，并**自动附上全量清单**供继续挑选 |
-| `sqlkb_get { id }` | 按表名或示例名读取**单个**明细文件，返回完整内容（字段清单或 SQL 正文）；未找到时自动留痕到待补池 |
-| `sqlkb_validate { }` | 按规范校验整个知识目录（front-matter 完整性、命名一致性、重复、空正文） |
+| `sqlkb_list { kind? }` | 列出全量清单：全部表/示例/坑点的紧凑描述行。**【硬要求】做任何 SQL 相关工作第一步必须先调用本工具**，看清有哪些资源再决定下一步 |
+| `sqlkb_search { query, kind? }` | 关键词检索表/示例/坑点。**表匹配包含名称/用途/标签/引擎/相关表 + 正文字段名与字段注释**；支持词元拆分与量词后缀兜底；强匹配标 ★ 排前。**命中表/示例会自动附上相关坑点**。未命中自动留痕并附全量清单 |
+| `sqlkb_get { id }` | 按表名/示例名/坑点名读取**单个**明细；**读表/示例时自动附带关联坑点**；未找到时自动留痕到待补池 |
+| `sqlkb_validate { }` | 按规范校验整个知识目录（tables/examples/pitfalls 的 front-matter 完整性、命名一致性、重复、空正文） |
 | `sqlkb_pending { action?, keyword?, kind?, note?, id? }` | 管理待补池：`list`（默认）列出当前会话未命中记录；`add` 手动记录一条；`remove` 清理废弃条目 |
-| `sqlkb_create { kind, name, purpose, …, user_approved, from_pending? }` | 将待补条目补录为表/示例知识文件（写入 `tables/` 或 `examples/`）并自动校验。**必须 user_approved: true（用户明确同意）**，成功后自动删除对应待补条目 |
-| `sqlkb_update { kind, name, …, user_approved }` | 更新已有表/示例的字段或正文（只传要改的字段，省略则保留原值；body 省略则保留原正文）。**必须 user_approved: true**；删到缺必填字段会被拦；条目不存在时改用 create |
+| `sqlkb_create { kind, name, …, user_approved, from_pending? }` | 新增表/示例/坑点知识文件。表/示例写入 `tables/`或`examples/` 需 **user_approved: true**；坑点写入 `pitfalls/` **允许自行记录**（纯追加经验）。成功后自动删除对应待补条目 |
+| `sqlkb_update { kind, name, …, user_approved }` | 更新已有表/示例/坑点的字段或正文（只传要改的字段，省略保留原值）。表/示例需 **user_approved: true**，坑点可自行修订；删到缺必填字段会被拦；条目不存在时改用 create |
 
-## 知识目录规范（tables / examples）
+## 知识目录规范（tables / examples / pitfalls）
 
 数据目录结构：
 
@@ -63,7 +63,8 @@ dsh plugin --profile web add link:/path/to/this/checkout
 ~/.agents/sqlkb/
 ├── README.md            # 种子说明（自动生成，含规范）
 ├── tables/<表名>.md     # 每表一个文件
-└── examples/<示例名>.md # 每示例一个文件
+├── examples/<示例名>.md # 每示例一个文件
+└── pitfalls/<坑点名>.md # 每坑一个文件（踩坑经验，按标签归集）
 ```
 
 > 待补池**不落盘**：未命中留痕存在进程内存中（按会话隔离、重启即清空），本目录不会出现任何待补池文件。
@@ -97,13 +98,30 @@ tags: 客单价, 销售
 
 **口径红线约定（写入每个示例的「口径」段）**：各指标的**唯一来源表/字段**、禁止用什么替代（如「销售额唯一来源 dm 表，禁用客流表自带销售额字段」），让模型读到即按口径执行、不做单表简化。
 
+**坑点文件 front-matter**：
+
+```yaml
+---
+name: stat_flag 不匹配导致客流重复   # 与文件名一致
+type: 口径                            # 坑类型：口径/字段/连接/引擎/性能/权限/其他
+tables: dws.dws_sale_mld_sales_custflow_1d  # 相关表，逗号分隔，必填（检索关联依赖）
+related_examples: 客流查询           # 可选：相关示例名
+tags: 客流, stat_flag                # 检索标签
+severity: 高                          # 可选：高/中/低
+---
+[正文：坑描述 / 错误示例 / 正确做法 / 来源]
+```
+
+> **坑点沉淀**：执行 SQL 出错/踩坑后，用 `sqlkb_create(kind=pitfall, tables=相关表)` 记录（可直接记录，无需用户同意，纯追加经验）。检索表/示例时 `sqlkb_search`/`sqlkb_get` 会按 `tables`/`related_examples` 自动附上相关坑点。
+
 ## 维护
 
 - **新增表**：新建 `tables/<表>.md`（front-matter 五要素 + 正文）→ 下个描述层缓存窗口自动出现，无需改插件
 - **新增示例**：新建 `examples/<示例>.md`（`tables` 字段必填）→ 自动收录
-- **修改**：直接编辑对应文件，`sqlkb_validate` 校验合规；会话内可用 `sqlkb_update`（经用户同意后）更新已有字段/正文
+- **新增坑点**：新建 `pitfalls/<坑>.md`（`name/type/tables/tags` 必填）→ 自动收录；也可会话内 `sqlkb_create(kind=pitfall)` 直接沉淀踩坑经验
+- **修改**：直接编辑对应文件，`sqlkb_validate` 校验合规；会话内可用 `sqlkb_update` 更新已有字段/正文
 - **红线**：描述层永远只含 front-matter 元数据；字段明细/SQL 正文只进各自文件
-- **创建/更新规范**：agent 涉及创建/更新知识（`sqlkb_create`/`sqlkb_update`）必须遵循 front-matter 规范（表必填 name/type/purpose/exec/engines/tags，示例必填 name/purpose/tables/tags）、正文字段名与实际表字段一致、口径写明唯一来源表/字段，并**先征得用户明确同意**后以 `user_approved: true` 调用，禁止擅自写知识库
+- **创建/更新规范**：agent 涉及创建/更新知识（`sqlkb_create`/`sqlkb_update`）必须遵循 front-matter 规范（表必填 name/type/purpose/exec/engines/tags，示例必填 name/purpose/tables/tags，坑点必填 name/type/tables/tags）、正文字段名与实际表字段一致、口径写明唯一来源表/字段；表/示例写入**先征得用户明确同意**（`user_approved: true`），坑点记录可直接执行
 - **待补池**：`sqlkb_search`/`sqlkb_get` 未命中会自动留痕到当前会话内存（不写任何文件、重启即清空、按会话隔离不会污染其他会话）；`sqlkb_search` 未命中还会**自动附全量清单**供继续挑选。任务收尾时模型会用 `sqlkb_pending list` 向你确认，你同意后用 `sqlkb_create` 补录为正式知识文件
 
 ## 设计说明
@@ -112,6 +130,7 @@ tags: 客单价, 销售
 - 插件不 publish 任何 service，纯消费 `systemPrompt`/`tools`，可安全挂载于宿主层
 - 知识数据是纯 markdown（front-matter + 正文），工具无关，任何编码代理（pi/Claude Code 等）可直接按文件路径读取
 - **表和示例都要看**：定好目标表后，先读相关**示例**（沉淀了口径红线/SQL，优先复用）再读**表**字段清单，两者都读完再写 SQL（描述层强制）
+- **坑点自动暴露（方式1）**：`sqlkb_search` 命中表/示例时、`sqlkb_get` 读表/示例时，按坑点 front-matter 的 `tables`/`related_examples` 自动附上相关坑点，让 Agent 在执行 SQL 前就看到前人踩过的坑，避免重复犯错
 
 ## 许可
 
