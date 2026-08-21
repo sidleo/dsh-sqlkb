@@ -179,7 +179,9 @@ async function buildSection(dataDir, maxSectionChars) {
     '- 步骤2 sqlkb_search — 用业务指标词/字段名/字段注释缩小范围（含正文字段匹配）',
     '- 步骤3 sqlkb_get — 读取单个明细：先看相关【示例】（口径/SQL），再看【表】（字段清单），两者都读',
     '- sqlkb_pending — 待补池：未命中的检索/读取自动留痕（内存、不写文件、重启即清空）',
-    '- sqlkb_create — 经用户明确同意后把待补条目补录为表/示例知识',
+    '- sqlkb_create — 经用户明确同意后新增表/示例知识',
+    '- sqlkb_update — 经用户明确同意后更新已有表/示例的字段或正文（表结构变更/口径修正时用）',
+    '创建/更新时遵循知识库规范：表 front-matter 必填 name/type/purpose/exec/engines/tags（related 可选）＋正文放字段清单；示例必填 name/purpose/tables/tags＋正文放用途/口径/SQL/来源；正文里的字段名要与实际表字段一致，口径要写明唯一来源表/字段。必须在征得用户同意后用 sqlkb_create/sqlkb_update（user_approved: true），禁止擅自写知识库。',
   ].join('\n')
   if (text.length > maxSectionChars) text = text.slice(0, maxSectionChars) + '\n…（描述层超限截断）'
   return text
@@ -231,6 +233,40 @@ function removePending(pool, id) {
     }
   }
   return { ok: false, error: `待补条目不存在: ${id}` }
+}
+
+/** 按 front-matter 元数据对象序列化为 markdown 文件文本（保留字段顺序：name/purpose 固定在前）。 */
+function serializeFM(meta, body) {
+  // 逗号分隔的多值字段规范化：逗号后补一个空格，与既有知识库 tags/engines 风格一致
+  const norm = (v) => String(v).replace(/\s*,\s*/g, ', ').trim()
+  const fields = ['name', 'purpose']
+  const lines = ['---']
+  for (const f of fields) {
+    if (meta[f] !== undefined && meta[f] !== '') lines.push(`${f}: ${norm(meta[f])}`)
+  }
+  // 其余字段按稳定顺序输出
+  const rest = ['type', 'exec', 'engines', 'related', 'tables', 'tags']
+  for (const f of rest) {
+    if (meta[f] !== undefined && meta[f] !== '') lines.push(`${f}: ${norm(meta[f])}`)
+  }
+  // 顺序外的未知字段
+  for (const k of Object.keys(meta)) {
+    if (!fields.includes(k) && !rest.includes(k) && meta[k] !== undefined && meta[k] !== '') {
+      lines.push(`${k}: ${String(meta[k]).trim()}`)
+    }
+  }
+  lines.push('---', '')
+  return lines.join('\n') + String(body || '').trim() + '\n'
+}
+
+/** 读单个表/示例文件，返回 { meta, body, file }；不存在返回 null。 */
+async function readOne(dataDir, kind, name) {
+  const sub = kind === 'table' ? 'tables' : 'examples'
+  const file = join(dataDir, sub, `${name}.md`)
+  let text
+  try { text = await readFile(file, 'utf8') } catch { return null }
+  const { meta, body } = parseFM(text)
+  return { meta, body, file: `${sub}/${name}.md` }
 }
 
 /** 按编写规范校验知识目录，返回问题清单（支持持续新增/修改表、示例）。 */
@@ -603,6 +639,65 @@ export function apply(ctx, config) {
         if (r.ok) removed = `\n已从本会话待补池删除：${args.from_pending}`
       }
       return { text: `已写入 ${file}${removed}\n\n${check}` }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'sqlkb_update',
+    description: [
+      '更新知识目录中已有表/示例文件的字段或正文（元数据 + 正文均可改），并自动校验规范。',
+      '【必须经用户同意】仅在用户明确同意后调用，且需传 user_approved: true，否则拒绝执行。',
+      '参数：kind(table/example)、name（待更新条目的精确名称）；purpose/type/exec/engines/tags/related/tables 只传要改的字段（省略则保持原值）；body 为要替换的正文（省略则保留原正文）。',
+      '条目不存在时请改用 sqlkb_create 新增。',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['table', 'example'] },
+        name: { type: 'string', description: '待更新条目的精确名称（表名或示例名，与文件名一致）' },
+        purpose: { type: 'string', description: '一句话用途' },
+        type: { type: 'string', description: 'kind=table：事实表/维表/临时表等' },
+        exec: { type: 'string', description: 'kind=table：执行方式（如 skill:yh-bigdata）' },
+        engines: { type: 'string', description: 'kind=table：支持引擎，逗号分隔' },
+        tags: { type: 'string', description: '检索标签，逗号分隔' },
+        related: { type: 'string', description: 'kind=table：同构/关联表' },
+        tables: { type: 'string', description: 'kind=example：用到的表，逗号分隔' },
+        body: { type: 'string', description: '替换正文（表=字段清单；示例=SQL/口径/说明）' },
+        user_approved: { type: 'boolean', description: '必须为 true：用户已明确同意更新' },
+      },
+      required: ['kind', 'name'],
+    },
+    output: textOut,
+    async execute(args) {
+      if (args.user_approved !== true) {
+        return { text: '拒绝执行：更新前必须先向用户展示拟改动内容并获得明确同意，同意后以 user_approved: true 重新调用。' }
+      }
+      const kind = args.kind
+      const name = String(args.name || '').trim()
+      if (!name) return { text: 'name 不能为空' }
+      const existing = await readOne(dataDir, kind, name)
+      if (!existing) {
+        return { text: `未找到「${name}」，无法更新。请用 sqlkb_create 新增。` }
+      }
+      // 合并：传入字段覆盖原值，省略则保留原值；body 单独处理（有则替换）
+      const meta = { ...existing.meta }
+      for (const key of ['purpose', 'type', 'exec', 'engines', 'related', 'tables', 'tags']) {
+        if (args[key] !== undefined) {
+          const v = String(args[key]).trim()
+          if (v === '') delete meta[key]
+          else meta[key] = v
+        }
+      }
+      const nameVal = meta.name || name
+      // 校验当前字段是否满足必填（防止更新后缺字段）
+      const required = kind === 'table' ? ['name', 'type', 'purpose', 'exec', 'engines', 'tags'] : ['name', 'purpose', 'tables', 'tags']
+      const missing = required.filter((k) => !meta[k] || meta[k] === '')
+      if (missing.length) return { text: `更新后缺少必填字段：${missing.join(', ')}。请一并提供或勿删减这些字段。` }
+      const body = args.body !== undefined ? String(args.body).trim() : existing.body
+      const file = join(dataDir, kind === 'table' ? 'tables' : 'examples', `${nameVal}.md`)
+      await writeFile(file, serializeFM(meta, body), 'utf8')
+      const check = await validate(dataDir)
+      return { text: `已更新 ${existing.file}\n\n${check}` }
     },
   })
 }

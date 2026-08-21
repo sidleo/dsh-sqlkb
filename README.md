@@ -53,6 +53,7 @@ dsh plugin --profile web add link:/path/to/this/checkout
 | `sqlkb_validate { }` | 按规范校验整个知识目录（front-matter 完整性、命名一致性、重复、空正文） |
 | `sqlkb_pending { action?, keyword?, kind?, note?, id? }` | 管理待补池：`list`（默认）列出当前会话未命中记录；`add` 手动记录一条；`remove` 清理废弃条目 |
 | `sqlkb_create { kind, name, purpose, …, user_approved, from_pending? }` | 将待补条目补录为表/示例知识文件（写入 `tables/` 或 `examples/`）并自动校验。**必须 user_approved: true（用户明确同意）**，成功后自动删除对应待补条目 |
+| `sqlkb_update { kind, name, …, user_approved }` | 更新已有表/示例的字段或正文（只传要改的字段，省略则保留原值；body 省略则保留原正文）。**必须 user_approved: true**；删到缺必填字段会被拦；条目不存在时改用 create |
 
 ## 知识目录规范（tables / examples）
 
@@ -100,8 +101,9 @@ tags: 客单价, 销售
 
 - **新增表**：新建 `tables/<表>.md`（front-matter 五要素 + 正文）→ 下个描述层缓存窗口自动出现，无需改插件
 - **新增示例**：新建 `examples/<示例>.md`（`tables` 字段必填）→ 自动收录
-- **修改**：直接编辑对应文件，`sqlkb_validate` 校验合规
+- **修改**：直接编辑对应文件，`sqlkb_validate` 校验合规；会话内可用 `sqlkb_update`（经用户同意后）更新已有字段/正文
 - **红线**：描述层永远只含 front-matter 元数据；字段明细/SQL 正文只进各自文件
+- **创建/更新规范**：agent 涉及创建/更新知识（`sqlkb_create`/`sqlkb_update`）必须遵循 front-matter 规范（表必填 name/type/purpose/exec/engines/tags，示例必填 name/purpose/tables/tags）、正文字段名与实际表字段一致、口径写明唯一来源表/字段，并**先征得用户明确同意**后以 `user_approved: true` 调用，禁止擅自写知识库
 - **待补池**：`sqlkb_search`/`sqlkb_get` 未命中会自动留痕到当前会话内存（不写任何文件、重启即清空、按会话隔离不会污染其他会话）；`sqlkb_search` 未命中还会**自动附全量清单**供继续挑选。任务收尾时模型会用 `sqlkb_pending list` 向你确认，你同意后用 `sqlkb_create` 补录为正式知识文件
 
 ## 设计说明
